@@ -4,7 +4,7 @@ import os
 import json
 import threading
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import requests
 from keep_alive import keep_alive
 
@@ -21,7 +21,7 @@ PORT = int(os.environ.get('PORT', 8080))
 
 # OpenRouter AI Configuration
 AI_CONFIG = {
-    "api_key": "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",
+    "api_key": os.environ.get('OPENROUTER_API_KEY', ''),
     "base_url": "https://openrouter.ai/api/v1",
     "model": "deepseek/deepseek-chat-v3-0324:free",
     "language": "English"
@@ -37,11 +37,28 @@ PREMIUM_USERS = {}
 OWNERS = []
 BOT_START_TIME = time.time()
 GROUP_IDS = set()
-USER_CONVERSATIONS = {}  # Store conversation history for AI
+USER_CONVERSATIONS = {}
+
+# Trial System
+TRIAL_USERS = {}  # Store trial users and their usage
+TRIAL_DURATION_DAYS = 3  # Free trial duration
+TRIAL_FEATURE_LIMITS = {
+    "silencer": 1,    # 1 free use
+    "crash": 0,       # Premium only
+    "xdelay": 2,      # 2 free uses
+    "ask": 10         # 10 AI questions
+}
+
+# Premium Plans
+PREMIUM_PLANS = {
+    "weekly": {"name": "Weekly", "days": 7, "price": "$2.99"},
+    "monthly": {"name": "Monthly", "days": 30, "price": "$7.99"},
+    "yearly": {"name": "Yearly", "days": 365, "price": "$49.99"}
+}
 
 def load_data():
     """Load all data from JSON files"""
-    global PREMIUM_USERS, OWNERS, GROUP_IDS
+    global PREMIUM_USERS, OWNERS, GROUP_IDS, TRIAL_USERS
     try:
         with open(f"{DATA_DIR}/premium.json", "r") as f:
             PREMIUM_USERS = json.load(f)
@@ -62,6 +79,13 @@ def load_data():
         logger.info(f"Loaded {len(GROUP_IDS)} groups")
     except:
         GROUP_IDS = set()
+    
+    try:
+        with open(f"{DATA_DIR}/trials.json", "r") as f:
+            TRIAL_USERS = json.load(f)
+        logger.info(f"Loaded {len(TRIAL_USERS)} trial users")
+    except:
+        TRIAL_USERS = {}
 
 def save_data():
     """Save all data to JSON files"""
@@ -71,12 +95,96 @@ def save_data():
         json.dump(OWNERS, f)
     with open(f"{DATA_DIR}/groups.json", "w") as f:
         json.dump(list(GROUP_IDS), f)
+    with open(f"{DATA_DIR}/trials.json", "w") as f:
+        json.dump(TRIAL_USERS, f)
 
 def is_owner(user_id):
     return str(user_id) in OWNERS
 
 def is_premium(user_id):
-    return str(user_id) in PREMIUM_USERS
+    user_id = str(user_id)
+    if user_id in PREMIUM_USERS:
+        premium_data = PREMIUM_USERS[user_id]
+        if "expires" in premium_data and premium_data["expires"]:
+            expiry = datetime.fromisoformat(premium_data["expires"])
+            if expiry > datetime.now():
+                return True
+            else:
+                # Premium expired
+                del PREMIUM_USERS[user_id]
+                save_data()
+                return False
+        return True
+    return False
+
+def is_trial_active(user_id):
+    """Check if user has active trial"""
+    user_id = str(user_id)
+    if user_id in TRIAL_USERS:
+        trial_data = TRIAL_USERS[user_id]
+        trial_start = datetime.fromisoformat(trial_data["start_date"])
+        trial_end = trial_start + timedelta(days=TRIAL_DURATION_DAYS)
+        return datetime.now() < trial_end
+    return False
+
+def start_trial(user_id):
+    """Start free trial for user"""
+    user_id = str(user_id)
+    if user_id not in TRIAL_USERS and user_id not in PREMIUM_USERS:
+        TRIAL_USERS[user_id] = {
+            "start_date": datetime.now().isoformat(),
+            "features_used": {
+                "silencer": 0,
+                "crash": 0,
+                "xdelay": 0,
+                "ask": 0
+            }
+        }
+        save_data()
+        return True
+    return False
+
+def can_use_feature(user_id, feature):
+    """Check if user can use a premium feature"""
+    user_id = str(user_id)
+    
+    # Owner can use everything
+    if is_owner(user_id):
+        return True, "unlimited"
+    
+    # Premium users have unlimited access
+    if is_premium(user_id):
+        return True, "unlimited"
+    
+    # Check trial
+    if is_trial_active(user_id):
+        trial_data = TRIAL_USERS[user_id]
+        used = trial_data["features_used"].get(feature, 0)
+        limit = TRIAL_FEATURE_LIMITS.get(feature, 0)
+        
+        if used < limit:
+            return True, limit - used
+        else:
+            return False, 0
+    
+    # No trial, no premium
+    return False, 0
+
+def use_feature(user_id, feature):
+    """Record feature usage for trial users"""
+    user_id = str(user_id)
+    
+    if is_owner(user_id) or is_premium(user_id):
+        return True
+    
+    if is_trial_active(user_id):
+        trial_data = TRIAL_USERS[user_id]
+        if feature in trial_data["features_used"]:
+            trial_data["features_used"][feature] += 1
+            save_data()
+        return True
+    
+    return False
 
 def ai_chat(messages, user_id):
     """Send request to OpenRouter AI API"""
@@ -84,8 +192,8 @@ def ai_chat(messages, user_id):
         headers = {
             "Authorization": f"Bearer {AI_CONFIG['api_key']}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://t.me/AlurbBot",  # Required for OpenRouter
-            "X-Title": "Alurb Telegram Bot"  # Your bot name
+            "HTTP-Referer": "https://t.me/AlurbBot",
+            "X-Title": "Alurb Telegram Bot"
         }
         
         payload = {
@@ -106,8 +214,8 @@ def ai_chat(messages, user_id):
             data = response.json()
             return data['choices'][0]['message']['content']
         else:
-            logger.error(f"AI API Error: {response.status_code} - {response.text}")
-            return "❌ AI service temporarily unavailable. Please try again later."
+            logger.error(f"AI API Error: {response.status_code}")
+            return "❌ AI service temporarily unavailable."
             
     except Exception as e:
         logger.error(f"AI Request Error: {e}")
@@ -123,8 +231,19 @@ keep_alive()
 
 @bot.message_handler(commands=['start'])
 def start_command(message):
-    user_id = message.from_user.id
+    user_id = str(message.from_user.id)
     username = message.from_user.username or "User"
+    
+    # Check if user has active trial or premium
+    trial_status = ""
+    if is_premium(user_id):
+        trial_status = "\n💎 Status: Premium User"
+    elif is_trial_active(user_id):
+        days_left = get_trial_days_left(user_id)
+        trial_status = f"\n🎁 Status: Free Trial ({days_left} days left)"
+    else:
+        trial_status = "\n🎁 Status: Free user (Start trial with /trial)"
+    
     welcome_text = f"""
 ╔══════════════════════╗
      🤖 WELCOME TO ALURB BOT 🤖
@@ -135,16 +254,22 @@ def start_command(message):
 🔰 Bot Features:
 • 24/7 Online Status
 • AI Assistant (DeepSeek V3)
-• Premium Management  
+• Premium Features with Trial
 • Owner Management
 • Group Management
 • And much more!
 
-📌 Use /help to see all commands
-🏠 Bot Status: Active 24/7 ✅
+🎁 FREE TRIAL AVAILABLE!
+• {TRIAL_DURATION_DAYS} days trial
+• Silencer: {TRIAL_FEATURE_LIMITS['silencer']} free use
+• XDelay: {TRIAL_FEATURE_LIMITS['xdelay']} free uses
+• AI Questions: {TRIAL_FEATURE_LIMITS['ask']} free
 
-🤖 AI Model: DeepSeek Chat V3
-💡 Try /ask <your question>
+📌 Commands:
+/help - See all commands
+/trial - Start free trial
+/premium - View premium plans
+/status - Check your status{trial_status}
 
 ━━━━━━━━━━━━━━━━━━━━━━
 © dev_nappier 😂🫡
@@ -156,17 +281,125 @@ Powered by Alurb Bot System
         GROUP_IDS.add(str(message.chat.id))
         save_data()
 
+def get_trial_days_left(user_id):
+    """Calculate days left in trial"""
+    user_id = str(user_id)
+    if user_id in TRIAL_USERS:
+        trial_start = datetime.fromisoformat(TRIAL_USERS[user_id]["start_date"])
+        trial_end = trial_start + timedelta(days=TRIAL_DURATION_DAYS)
+        days_left = (trial_end - datetime.now()).days
+        return max(0, days_left)
+    return 0
+
+@bot.message_handler(commands=['trial'])
+def trial_command(message):
+    user_id = str(message.from_user.id)
+    
+    if is_premium(user_id):
+        bot.reply_to(message, "💎 You're already a Premium user! No trial needed.")
+        return
+    
+    if is_trial_active(user_id):
+        days_left = get_trial_days_left(user_id)
+        trial_data = TRIAL_USERS[user_id]
+        
+        status_text = f"""
+🎁 YOUR TRIAL STATUS
+
+📅 Days Left: {days_left}
+🔄 Features Used:
+• Silencer: {trial_data['features_used']['silencer']}/{TRIAL_FEATURE_LIMITS['silencer']}
+• XDelay: {trial_data['features_used']['xdelay']}/{TRIAL_FEATURE_LIMITS['xdelay']}
+• AI Questions: {trial_data['features_used']['ask']}/{TRIAL_FEATURE_LIMITS['ask']}
+
+💎 Upgrade to Premium for unlimited access!
+/premium - View plans
+        """
+        bot.reply_to(message, status_text)
+        return
+    
+    # Start new trial
+    if start_trial(user_id):
+        trial_text = f"""
+🎉 FREE TRIAL ACTIVATED!
+
+✅ Your {TRIAL_DURATION_DAYS}-day trial has started!
+
+🎁 Trial Benefits:
+• Silencer: {TRIAL_FEATURE_LIMITS['silencer']} free use
+• XDelay: {TRIAL_FEATURE_LIMITS['xdelay']} free uses  
+• AI Questions: {TRIAL_FEATURE_LIMITS['ask']} free
+
+💎 Premium Features (Locked):
+• Crash attack
+• Unlimited silencer
+• Unlimited AI questions
+• Priority support
+
+/premium - Upgrade to Premium
+/status - Check your status
+
+Enjoy your trial! 🚀
+        """
+        bot.reply_to(message, trial_text)
+        logger.info(f"Trial started for user {user_id}")
+    else:
+        bot.reply_to(message, "❌ Unable to start trial. You may already have an account.")
+
+@bot.message_handler(commands=['premium'])
+def premium_command(message):
+    """Show premium plans"""
+    plans_text = """
+╔══════════════════════╗
+     💎 PREMIUM PLANS 💎
+╚══════════════════════╝
+
+Choose your plan:
+
+📅 WEEKLY
+• Duration: 7 days
+• Price: $2.99
+• Full access to all features
+
+📅 MONTHLY (Most Popular)
+• Duration: 30 days
+• Price: $7.99
+• Save 33% vs weekly
+
+📅 YEARLY (Best Value)
+• Duration: 365 days
+• Price: $49.99
+• Save 48% vs monthly
+
+━━━━━━━━━━━━━━━━━━━━━━
+✨ Premium Benefits:
+• Unlimited silencer attacks
+• Crash attack access
+• Unlimited AI questions
+• Priority support
+• No ads
+• Early access to new features
+
+💳 To upgrade, contact: @dev_nappier
+📧 Or email: premium@alurb-bot.com
+
+━━━━━━━━━━━━━━━━━━━━━━
+Current offers subject to change.
+© dev_nappier 😂🫡
+    """
+    bot.reply_to(message, plans_text)
+
 @bot.message_handler(commands=['pair'])
 def pair_command(message):
     user_id = str(message.from_user.id)
     
     if not is_owner(user_id):
-        bot.reply_to(message, "❌ You don't have permission to use this command!")
+        bot.reply_to(message, "❌ Owner only command!")
         return
     
     try:
         token = message.text.split(' ', 1)[1]
-        bot.reply_to(message, f"✅ Pairing bot with token: {token[:10]}...\n⚠️ Note: This is a simulated pairing system.")
+        bot.reply_to(message, f"✅ Pairing bot with token: {token[:10]}...")
         logger.info(f"Pair attempt by user {user_id}")
     except:
         bot.reply_to(message, "❌ Usage: /pair <bot_token>")
@@ -180,17 +413,34 @@ def add_premium(message):
         return
     
     try:
-        target_id = message.text.split(' ', 1)[1]
+        parts = message.text.split(' ')
+        target_id = parts[1]
+        
+        # Check for plan duration
+        plan = "monthly"
+        if len(parts) > 2:
+            plan = parts[2]
+        
+        days = PREMIUM_PLANS.get(plan, PREMIUM_PLANS["monthly"])["days"]
+        expiry = datetime.now() + timedelta(days=days)
+        
         PREMIUM_USERS[target_id] = {
             "added_by": user_id,
             "date": str(datetime.now()),
-            "expires": None
+            "expires": expiry.isoformat(),
+            "plan": plan
         }
         save_data()
-        bot.reply_to(message, f"✅ User {target_id} added to premium list!")
-        logger.info(f"User {target_id} added to premium by {user_id}")
+        
+        # Remove from trial if exists
+        if target_id in TRIAL_USERS:
+            del TRIAL_USERS[target_id]
+            save_data()
+        
+        bot.reply_to(message, f"✅ User {target_id} upgraded to Premium ({plan})!\nExpires: {expiry.strftime('%Y-%m-%d')}")
+        logger.info(f"User {target_id} upgraded to premium by {user_id}")
     except:
-        bot.reply_to(message, "❌ Usage: /addprem <user_id>")
+        bot.reply_to(message, "❌ Usage: /addprem <user_id> [weekly/monthly/yearly]")
 
 @bot.message_handler(commands=['delprem'])
 def del_premium(message):
@@ -207,7 +457,7 @@ def del_premium(message):
             save_data()
             bot.reply_to(message, f"✅ User {target_id} removed from premium list!")
         else:
-            bot.reply_to(message, f"❌ User {target_id} not found in premium list!")
+            bot.reply_to(message, f"❌ User {target_id} not found!")
     except:
         bot.reply_to(message, "❌ Usage: /delprem <user_id>")
 
@@ -246,7 +496,7 @@ def del_owner(message):
             save_data()
             bot.reply_to(message, f"✅ User {target_id} removed from owners!")
         else:
-            bot.reply_to(message, f"❌ User {target_id} not found in owners list!")
+            bot.reply_to(message, f"❌ User {target_id} not found!")
     except:
         bot.reply_to(message, "❌ Usage: /delowner <user_id>")
 
@@ -261,7 +511,12 @@ def list_premium(message):
     if PREMIUM_USERS:
         text = "📋 PREMIUM USERS LIST:\n\n"
         for idx, (uid, data) in enumerate(PREMIUM_USERS.items(), 1):
-            text += f"{idx}. ID: `{uid}`\n   Added: {data['date']}\n\n"
+            expiry = "Permanent"
+            if "expires" in data and data["expires"]:
+                exp_date = datetime.fromisoformat(data["expires"])
+                expiry = exp_date.strftime("%Y-%m-%d")
+            plan = data.get("plan", "N/A")
+            text += f"{idx}. ID: `{uid}`\n   Plan: {plan}\n   Expires: {expiry}\n\n"
         bot.reply_to(message, text, parse_mode="Markdown")
     else:
         bot.reply_to(message, "📋 No premium users found!")
@@ -304,12 +559,18 @@ def list_groups(message):
 def silencer_attack(message):
     user_id = str(message.from_user.id)
     
-    if not is_owner(user_id) and not is_premium(user_id):
-        bot.reply_to(message, "❌ Premium or Owner only command!")
+    can_use, remaining = can_use_feature(user_id, "silencer")
+    
+    if not can_use:
+        if not is_trial_active(user_id) and not is_premium(user_id):
+            bot.reply_to(message, "❌ Start your free trial with /trial to use this feature!")
+        else:
+            bot.reply_to(message, "❌ You've used all your free silencer attacks!\n💎 Upgrade to Premium for unlimited access: /premium")
         return
     
     try:
         number = int(message.text.split(' ', 1)[1])
+        use_feature(user_id, "silencer")
         
         msg = bot.reply_to(message, f"🔇 Starting silencer attack with {number} threads...")
         
@@ -324,9 +585,12 @@ def silencer_attack(message):
             t.start()
             threads.append(t)
         
-        bot.edit_message_text(f"✅ Silencer attack active!\nThreads: {len(threads)}\nTarget: Device CPU", 
-                            message.chat.id, msg.message_id)
-        logger.info(f"Silencer attack initiated by {user_id} with {number} threads")
+        status_text = f"✅ Silencer attack active!\nThreads: {len(threads)}\nTarget: Device CPU"
+        if not is_owner(user_id) and not is_premium(user_id):
+            status_text += f"\n\n📊 Trial uses remaining: {remaining - 1}"
+        
+        bot.edit_message_text(status_text, message.chat.id, msg.message_id)
+        logger.info(f"Silencer attack by {user_id} with {number} threads")
     except:
         bot.reply_to(message, "❌ Usage: /silencer <number>")
 
@@ -334,8 +598,8 @@ def silencer_attack(message):
 def crash_attack(message):
     user_id = str(message.from_user.id)
     
-    if not is_owner(user_id):
-        bot.reply_to(message, "❌ Owner only command!")
+    if not is_owner(user_id) and not is_premium(user_id):
+        bot.reply_to(message, "❌ This is a PREMIUM ONLY feature!\n💎 Upgrade to Premium: /premium")
         return
     
     try:
@@ -360,191 +624,26 @@ def crash_attack(message):
 def xdelay_attack(message):
     user_id = str(message.from_user.id)
     
-    if not is_owner(user_id) and not is_premium(user_id):
-        bot.reply_to(message, "❌ Premium or Owner only command!")
+    can_use, remaining = can_use_feature(user_id, "xdelay")
+    
+    if not can_use:
+        if not is_trial_active(user_id) and not is_premium(user_id):
+            bot.reply_to(message, "❌ Start your free trial with /trial to use this feature!")
+        else:
+            bot.reply_to(message, "❌ You've used all your free XDelay attacks!\n💎 Upgrade to Premium for unlimited access: /premium")
         return
     
     try:
         delay_time = int(message.text.split(' ', 1)[1])
+        use_feature(user_id, "xdelay")
         
         msg = bot.reply_to(message, f"⏱ Applying heavy delay of {delay_time}ms...")
-        
         time.sleep(delay_time / 1000)
         
-        bot.edit_message_text(f"✅ Delay completed!\nDuration: {delay_time}ms", 
-                            message.chat.id, msg.message_id)
+        status_text = f"✅ Delay completed!\nDuration: {delay_time}ms"
+        if not is_owner(user_id) and not is_premium(user_id):
+            status_text += f"\n\n📊 Trial uses remaining: {remaining - 1}"
+        
+        bot.edit_message_text(status_text, message.chat.id, msg.message_id)
     except:
-        bot.reply_to(message, "❌ Usage: /xdelay <milliseconds>")
-
-@bot.message_handler(commands=['ask'])
-def ask_ai(message):
-    user_id = str(message.from_user.id)
-    
-    try:
-        query = message.text.split(' ', 1)[1]
-        
-        # Send typing indicator
-        bot.send_chat_action(message.chat.id, 'typing')
-        
-        # Initialize conversation for user if not exists
-        if user_id not in USER_CONVERSATIONS:
-            USER_CONVERSATIONS[user_id] = [
-                {"role": "system", "content": f"You are a helpful AI assistant for Alurb Telegram Bot. Respond in {AI_CONFIG['language']}. Be concise and friendly. © dev_nappier"}
-            ]
-        
-        # Add user message to conversation
-        USER_CONVERSATIONS[user_id].append({"role": "user", "content": query})
-        
-        # Keep conversation history limited (last 10 messages)
-        if len(USER_CONVERSATIONS[user_id]) > 11:
-            USER_CONVERSATIONS[user_id] = [USER_CONVERSATIONS[user_id][0]] + USER_CONVERSATIONS[user_id][-10:]
-        
-        # Get AI response
-        ai_response = ai_chat(USER_CONVERSATIONS[user_id], user_id)
-        
-        # Add AI response to conversation
-        USER_CONVERSATIONS[user_id].append({"role": "assistant", "content": ai_response})
-        
-        # Send response
-        response_text = f"""
-🤖 **AI Assistant Response**
-
-💭 **Question:** _{query}_
-
-📝 **Answer:**
-{ai_response}
-
-━━━━━━━━━━━━━━━━━━━━━━
-🤖 Model: DeepSeek Chat V3
-💡 Ask anything! I'm here 24/7
-© dev_nappier 😂🫡
-        """
-        
-        bot.reply_to(message, response_text, parse_mode="Markdown")
-        logger.info(f"AI query from {user_id}: {query[:50]}...")
-        
-    except IndexError:
-        bot.reply_to(message, "❌ Usage: /ask <your question>")
-    except Exception as e:
-        logger.error(f"AI command error: {e}")
-        bot.reply_to(message, "❌ Error processing your request. Please try again.")
-
-@bot.message_handler(commands=['clearai'])
-def clear_ai_history(message):
-    """Clear AI conversation history"""
-    user_id = str(message.from_user.id)
-    
-    if user_id in USER_CONVERSATIONS:
-        del USER_CONVERSATIONS[user_id]
-        bot.reply_to(message, "✅ AI conversation history cleared!")
-    else:
-        bot.reply_to(message, "ℹ️ No conversation history found.")
-
-@bot.message_handler(commands=['status'])
-def bot_status(message):
-    user_id = str(message.from_user.id)
-    
-    uptime = time.time() - BOT_START_TIME
-    days = int(uptime // 86400)
-    hours = int((uptime % 86400) // 3600)
-    minutes = int((uptime % 3600) // 60)
-    
-    status_text = f"""
-╔══════════════════════╗
-       🤖 BOT STATUS 🤖
-╚══════════════════════╝
-
-📊 Current Statistics:
-━━━━━━━━━━━━━━━━━━━━━━
-✅ Bot Status: 24/7 Active
-⏰ Uptime: {days}d {hours}h {minutes}m
-👑 Total Owners: {len(OWNERS)}
-💎 Premium Users: {len(PREMIUM_USERS)}
-📱 Groups Joined: {len(GROUP_IDS)}
-💬 Active AI Chats: {len(USER_CONVERSATIONS)}
-👤 Your Status: {'👑 Owner' if is_owner(user_id) else '💎 Premium' if is_premium(user_id) else '👤 User'}
-
-🛠 System Info:
-━━━━━━━━━━━━━━━━━━━━━━
-🤖 AI Model: DeepSeek Chat V3
-🌐 Language: {AI_CONFIG['language']}
-🔧 Python Telebot v{telebot.__version__}
-📡 Response Time: Optimal
-🔄 Auto-Restart: Enabled
-
-━━━━━━━━━━━━━━━━━━━━━━
-Powered by Alurb Bot System
-© dev_nappier 😂🫡
-    """
-    bot.reply_to(message, status_text)
-
-@bot.message_handler(commands=['help'])
-def help_command(message):
-    user_id = str(message.from_user.id)
-    
-    help_text = f"""
-╔══════════════════════╗
-     📚 COMMAND MENU 📚
-╚══════════════════════╝
-
-𖤊───⪩ OWNER MENU ⪨───𖤊
-✦ /pair <token> - Add bot
-✦ /addprem <id> - Add premium
-✦ /delprem <id> - Remove premium
-✦ /addowner <id> - Add owner
-✦ /delowner <id> - Remove owner
-✦ /listprem - Premium list
-✦ /cekidgrup - Group ID
-✦ /listidgrup - All groups
-
-𖤊───⪩ BUG MENU ⪨───𖤊
-✦ /silencer <num> - Crash Dvc
-✦ /crash <num> - System crash
-✦ /xdelay <num> - Heavy delay
-
-𖤊───⪩ AI MENU ⪨───𖤊
-✦ /ask <query> - Ask AI (DeepSeek V3)
-✦ /clearai - Clear AI history
-✦ /status - Bot status
-
-━━━━━━━━━━━━━━━━━━━━━━
-🤖 AI Model: DeepSeek Chat V3
-🌐 Language: {AI_CONFIG['language']}
-👤 Your Level: {'👑 Owner' if is_owner(user_id) else '💎 Premium' if is_premium(user_id) else '👤 User'}
-🔄 Bot runs 24/7 with auto-restart
-© dev_nappier 😂🫡
-    """
-    bot.reply_to(message, help_text)
-
-@bot.message_handler(func=lambda message: message.chat.type in ['group', 'supergroup'])
-def track_groups(message):
-    GROUP_IDS.add(str(message.chat.id))
-    if len(GROUP_IDS) % 10 == 0:
-        save_data()
-
-# ==================== MAIN RUNNER ====================
-
-def run_bot():
-    """Run bot with automatic restart on failure"""
-    logger.info("🚀 Starting Alurb Bot - 24/7 Mode with DeepSeek AI")
-    logger.info(f"🤖 AI Model: {AI_CONFIG['model']}")
-    logger.info(f"📊 Loaded {len(OWNERS)} owners, {len(PREMIUM_USERS)} premium users")
-    
-    if len(OWNERS) == 0:
-        logger.warning("⚠️ No owners set! First user to run /addowner will become owner.")
-    
-    while True:
-        try:
-            bot.infinity_polling(timeout=30, long_polling_timeout=30)
-        except requests.exceptions.ConnectionError as e:
-            logger.error(f"Network connection error: {e}")
-            time.sleep(10)
-        except requests.exceptions.ReadTimeout as e:
-            logger.error(f"Read timeout error: {e}")
-            time.sleep(5)
-        except Exception as e:
-            logger.error(f"Bot crashed with error: {e}")
-            time.sleep(10)
-
-if __name__ == "__main__":
-    run_bot()
+        bot.reply_to(message, "❌ Usage: /xdelay <mi
