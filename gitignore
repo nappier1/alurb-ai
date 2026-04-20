@@ -1,6 +1,0 @@
-bot_data/
-*.log
-__pycache__/
-*.pyc
-.env
-.DS_Store
