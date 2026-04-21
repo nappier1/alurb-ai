@@ -54,6 +54,8 @@ PREMIUM_PLANS = {
     "lifetime": {"name": "Lifetime", "days": 36500, "price": "$49.99"}
 }
 
+# ==================== DATA MANAGEMENT FUNCTIONS ====================
+
 def load_data():
     """Load all data from JSON files"""
     global PREMIUM_USERS, OWNERS, GROUP_IDS, TRIAL_USERS
@@ -148,6 +150,8 @@ def save_data():
     except Exception as e:
         logger.error(f"Error saving trials: {e}")
 
+# ==================== PERMISSION CHECK FUNCTIONS ====================
+
 def is_master(user_id):
     """Check if user is the Master Owner"""
     result = str(user_id) == MASTER_OWNER_ID
@@ -175,7 +179,6 @@ def is_premium(user_id):
                     logger.debug(f"Premium check for {user_id}: Active until {expiry}")
                     return True
                 else:
-                    # Premium expired - remove them
                     logger.info(f"Premium expired for {user_id}, removing...")
                     del PREMIUM_USERS[user_id]
                     save_data()
@@ -201,7 +204,6 @@ def is_trial_active(user_id):
                 logger.debug(f"Trial check for {user_id}: Active, {time_left.total_seconds()/60:.0f} min left")
                 return True
             else:
-                # Trial expired - remove it
                 logger.info(f"Trial expired for {user_id}, removing...")
                 del TRIAL_USERS[user_id]
                 save_data()
@@ -269,6 +271,8 @@ def check_premium_access(user_id):
     logger.debug(f"Access check for {user_id}: No access")
     return False
 
+# ==================== AI FUNCTIONS ====================
+
 def ai_chat(query):
     """Send request to Alurb AI via OpenRouter"""
     api_key = AI_CONFIG['api_key']
@@ -277,8 +281,8 @@ def ai_chat(query):
         logger.error("OPENROUTER_API_KEY environment variable not set!")
         return "❌ AI service not configured. Please contact @alurb_devs"
     
-    # Randomly choose creator name
-    creator_names = ["Nappier", "Michal", "Kathara"]
+    # Randomly choose creator name - ONLY Nappier or Ruth
+    creator_names = ["Nappier", "Ruth"]
     chosen_creator = random.choice(creator_names)
     
     logger.info(f"AI request with creator: {chosen_creator}")
@@ -297,7 +301,7 @@ def ai_chat(query):
 Important rules:
 - When asked who created you, say: "I was created by {chosen_creator}, the founder of Alurb Bot."
 - When asked your name, say: "I'm Alurb AI, your intelligent assistant."
-- Never mention DeepSeek, OpenAI, or any other AI company.
+- Never mention DeepSeek, OpenAI, Claude, or any other AI company.
 - Always identify yourself as Alurb AI.
 - Be helpful, friendly, and concise.
 - Copyright belongs to alurb_devs."""
@@ -610,7 +614,7 @@ def status_command(message):
 🛠 <b>Info:</b>
 ━━━━━━━━━━━━━━━━━━━━━━
 🤖 AI: Alurb AI
-👨‍💻 Creator: Nappier/Michal/Kathara
+👨‍💻 Creator: Nappier & Ruth
 🌐 Status: Online
 
 ━━━━━━━━━━━━━━━━━━━━━━
@@ -680,7 +684,7 @@ def help_command(message):
 👤 Your Level: <b>{user_level}</b>
 🎁 Free Trial: /trial ({TRIAL_HOURS}h)
 🤖 AI: Alurb AI
-👨‍💻 Creator: Nappier/Michal/Kathara
+👨‍💻 Creator: Nappier & Ruth
 © alurb_devs
     """
     bot.reply_to(message, help_text, parse_mode="HTML")
@@ -1083,7 +1087,7 @@ def ask_ai(message):
 {ai_response}
 
 ━━━━━━━━━━━━━━━━━━━━━━
-🤖 Alurb AI • Created by Nappier/Michal/Kathara
+🤖 Alurb AI • Created by Nappier & Ruth
 © alurb_devs
         """
         bot.reply_to(message, response_text, parse_mode="HTML")
@@ -1147,7 +1151,7 @@ def run_bot():
     logger.info("🚀 STARTING ALURB BOT - SINGLE INSTANCE MODE")
     logger.info(f"👑 Master Owner ID: {MASTER_OWNER_ID}")
     logger.info(f"🤖 AI: Alurb AI (DeepSeek backend)")
-    logger.info(f"👨‍💻 Creator: Nappier/Michal/Kathara")
+    logger.info(f"👨‍💻 Creators: Nappier & Ruth")
     logger.info(f"📊 Loaded: {len(OWNERS)} owners, {len(PREMIUM_USERS)} premium, {len(TRIAL_USERS)} trials, {len(GROUP_IDS)} groups")
     logger.info("=" * 50)
     
