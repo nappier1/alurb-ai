@@ -24,7 +24,7 @@ MASTER_OWNER_ID = "6803973808"  # YOUR Telegram ID - ONLY YOU can add/remove own
 
 # ==================== DEEPSEEK AI CONFIGURATION ====================
 AI_CONFIG = {
-    "api_key": "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",
+    "api_key": "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",
     "base_url": "https://openrouter.ai/api/v1",
     "model": "deepseek/deepseek-chat",
     "language": "English"
