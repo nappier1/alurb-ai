@@ -22,9 +22,9 @@ PORT = int(os.environ.get('PORT', 8080))
 # ==================== MASTER OWNER CONFIGURATION ====================
 MASTER_OWNER_ID = "6803973808"  # YOUR Telegram ID - ONLY YOU can add/remove owners
 
-# ==================== DEEPSEEK AI CONFIGURATION ====================
+# ==================== DEEPSEEK AI CONFIGURATION (SECURE) ====================
 AI_CONFIG = {
-    "api_key": "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",
+    "api_key": os.environ.get('OPENROUTER_API_KEY', ''),
     "base_url": "https://openrouter.ai/api/v1",
     "model": "deepseek/deepseek-chat",
     "language": "English"
@@ -47,7 +47,6 @@ TRIAL_HOURS = 2
 
 # Premium Plans
 PREMIUM_PLANS = {
-    "2hours": {"name": "2 Hours Trial", "hours": 2, "price": "FREE (Admin Only)"},
     "daily": {"name": "Daily", "days": 1, "price": "$0.99"},
     "weekly": {"name": "Weekly", "days": 7, "price": "$2.99"},
     "monthly": {"name": "Monthly", "days": 30, "price": "$7.99"},
@@ -174,9 +173,15 @@ def check_premium_access(user_id):
 
 def ai_chat(query):
     """Send request to DeepSeek AI via OpenRouter"""
+    api_key = AI_CONFIG['api_key']
+    
+    if not api_key:
+        logger.error("OPENROUTER_API_KEY environment variable not set!")
+        return "❌ AI service not configured. Please contact @alurb_devs"
+    
     try:
         headers = {
-            "Authorization": f"Bearer {AI_CONFIG['api_key']}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "HTTP-Referer": "https://t.me/alurb_bot",
             "X-Title": "Alurb Telegram Bot"
@@ -211,9 +216,9 @@ def ai_chat(query):
                 logger.error(f"Unexpected API response: {data}")
                 return "❌ AI returned an unexpected response."
         elif response.status_code == 401:
-            return "❌ AI API key invalid. Contact admin."
+            return "❌ Invalid API key. Contact @alurb_devs"
         elif response.status_code == 429:
-            return "❌ AI rate limit exceeded. Try again later."
+            return "❌ Rate limit exceeded. Try again later."
         else:
             logger.error(f"DeepSeek API Error {response.status_code}: {response.text[:100]}")
             return "❌ AI service temporarily unavailable."
@@ -353,7 +358,7 @@ Commands:
 Enjoy! 🚀
         """, parse_mode="HTML")
     else:
-        bot.reply_to(message, "❌ Unable to start trial. Contact admin.")
+        bot.reply_to(message, "❌ Unable to start trial. Contact @alurb_devs")
 
 # ==================== PREMIUM COMMAND ====================
 
@@ -544,6 +549,8 @@ def help_command(message):
 def add_owner(message):
     user_id = str(message.from_user.id)
     
+    logger.info(f"Addowner command from {user_id}, is_master: {is_master(user_id)}")
+    
     if not is_master(user_id):
         bot.reply_to(message, "❌ Only the Master Owner can add owners!")
         return
@@ -554,7 +561,7 @@ def add_owner(message):
             bot.reply_to(message, "❌ Usage: /addowner <user_id>")
             return
         
-        target_id = parts[1]
+        target_id = parts[1].strip()
         if target_id == MASTER_OWNER_ID:
             bot.reply_to(message, "⚠️ This is already the Master Owner!")
         elif target_id not in OWNERS:
@@ -572,6 +579,8 @@ def add_owner(message):
 def del_owner(message):
     user_id = str(message.from_user.id)
     
+    logger.info(f"Delowner command from {user_id}, is_master: {is_master(user_id)}")
+    
     if not is_master(user_id):
         bot.reply_to(message, "❌ Only the Master Owner can remove owners!")
         return
@@ -582,7 +591,7 @@ def del_owner(message):
             bot.reply_to(message, "❌ Usage: /delowner <user_id>")
             return
         
-        target_id = parts[1]
+        target_id = parts[1].strip()
         if target_id == MASTER_OWNER_ID:
             bot.reply_to(message, "❌ Cannot remove Master Owner!")
         elif target_id in OWNERS:
@@ -602,6 +611,8 @@ def del_owner(message):
 def add_premium(message):
     user_id = str(message.from_user.id)
     
+    logger.info(f"Addprem command from {user_id}, is_owner: {is_owner(user_id)}")
+    
     if not is_owner(user_id):
         bot.reply_to(message, "❌ Owner only command!")
         return
@@ -609,17 +620,17 @@ def add_premium(message):
     try:
         parts = message.text.split(' ')
         if len(parts) < 2:
-            bot.reply_to(message, "❌ Usage: /addprem <user_id> [plan]\nPlans: 2hours/daily/weekly/monthly/lifetime")
+            bot.reply_to(message, "❌ Usage: /addprem <user_id> [plan]\nPlans: daily/weekly/monthly/lifetime")
             return
         
-        target_id = parts[1]
-        plan = parts[2] if len(parts) > 2 else "monthly"
-        plan_info = PREMIUM_PLANS.get(plan, PREMIUM_PLANS["monthly"])
+        target_id = parts[1].strip()
+        plan = parts[2].strip().lower() if len(parts) > 2 else "monthly"
         
-        if "hours" in plan_info:
-            expiry = datetime.now() + timedelta(hours=plan_info["hours"])
-        else:
-            expiry = datetime.now() + timedelta(days=plan_info.get("days", 30))
+        if plan not in PREMIUM_PLANS:
+            plan = "monthly"
+        
+        plan_info = PREMIUM_PLANS[plan]
+        expiry = datetime.now() + timedelta(days=plan_info.get("days", 30))
         
         PREMIUM_USERS[target_id] = {
             "added_by": user_id,
@@ -639,11 +650,13 @@ def add_premium(message):
         
     except Exception as e:
         logger.error(f"Addprem error: {e}")
-        bot.reply_to(message, "❌ Usage: /addprem <user_id> [2hours/daily/weekly/monthly/lifetime]")
+        bot.reply_to(message, "❌ Usage: /addprem <user_id> [daily/weekly/monthly/lifetime]")
 
 @bot.message_handler(commands=['delprem'])
 def del_premium(message):
     user_id = str(message.from_user.id)
+    
+    logger.info(f"Delprem command from {user_id}, is_owner: {is_owner(user_id)}")
     
     if not is_owner(user_id):
         bot.reply_to(message, "❌ Owner only command!")
@@ -655,14 +668,14 @@ def del_premium(message):
             bot.reply_to(message, "❌ Usage: /delprem <user_id>")
             return
         
-        target_id = parts[1]
+        target_id = parts[1].strip()
         if target_id in PREMIUM_USERS:
             del PREMIUM_USERS[target_id]
             save_data()
             bot.reply_to(message, f"✅ User <code>{target_id}</code> removed from premium!", parse_mode="HTML")
             logger.info(f"Premium removed for {target_id} by {user_id}")
         else:
-            bot.reply_to(message, f"❌ User not found!")
+            bot.reply_to(message, f"❌ User <code>{target_id}</code> not found in premium list!", parse_mode="HTML")
     except Exception as e:
         logger.error(f"Delprem error: {e}")
         bot.reply_to(message, "❌ Usage: /delprem <user_id>")
@@ -670,6 +683,8 @@ def del_premium(message):
 @bot.message_handler(commands=['listprem'])
 def list_premium(message):
     user_id = str(message.from_user.id)
+    
+    logger.info(f"Listprem command from {user_id}, is_owner: {is_owner(user_id)}")
     
     if not is_owner(user_id):
         bot.reply_to(message, "❌ Owner only command!")
@@ -683,7 +698,11 @@ def list_premium(message):
             if data.get("expires"):
                 exp = datetime.fromisoformat(data["expires"])
                 days = (exp - datetime.now()).days
-                text += f"• <code>{uid}</code> - {plan_name} ({days}d left)\n"
+                hours_left = int((exp - datetime.now()).total_seconds() // 3600)
+                if hours_left < 24:
+                    text += f"• <code>{uid}</code> - {plan_name} ({hours_left}h left)\n"
+                else:
+                    text += f"• <code>{uid}</code> - {plan_name} ({days}d left)\n"
             else:
                 text += f"• <code>{uid}</code> - {plan_name} (Lifetime)\n"
         bot.reply_to(message, text, parse_mode="HTML")
