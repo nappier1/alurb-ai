@@ -22,6 +22,14 @@ PORT = int(os.environ.get('PORT', 8080))
 # ==================== MASTER OWNER CONFIGURATION ====================
 MASTER_OWNER_ID = "6803973808"  # YOUR Telegram ID - ONLY YOU can add/remove owners
 
+# ==================== DEEPSEEK AI CONFIGURATION ====================
+AI_CONFIG = {
+    "api_key": "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",
+    "base_url": "https://openrouter.ai/api/v1",
+    "model": "deepseek/deepseek-chat",
+    "language": "English"
+}
+
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
 # Data storage
@@ -32,7 +40,6 @@ PREMIUM_USERS = {}
 OWNERS = []
 BOT_START_TIME = time.time()
 GROUP_IDS = set()
-USER_CONVERSATIONS = {}
 
 # Trial System - 2 Hours Free Trial
 TRIAL_USERS = {}
@@ -46,16 +53,6 @@ PREMIUM_PLANS = {
     "monthly": {"name": "Monthly", "days": 30, "price": "$7.99"},
     "lifetime": {"name": "Lifetime", "days": 36500, "price": "$49.99"}
 }
-
-# ==================== AI APIs (WORKING) ====================
-AI_APIS = [
-    "https://zellapi.autos/ai/chatbot?text={query}",
-    "https://vapis.my.id/api/gemini?q={query}",
-    "https://api.siputzx.my.id/api/ai/gemini-pro?content={query}",
-    "https://api.ryzendesu.vip/api/ai/gemini?text={query}",
-    "https://api.giftedtech.my.id/api/ai/geminiai?apikey=gifted&q={query}",
-    "https://api.giftedtech.my.id/api/ai/geminiaipro?apikey=gifted&q={query}"
-]
 
 def load_data():
     global PREMIUM_USERS, OWNERS, GROUP_IDS, TRIAL_USERS
@@ -176,49 +173,58 @@ def check_premium_access(user_id):
     return False
 
 def ai_chat(query):
-    """Send request to multiple AI APIs - WORKING VERSION"""
-    for api_url in AI_APIS:
-        try:
-            url = api_url.replace("{query}", requests.utils.quote(query))
-            logger.info(f"Trying AI API: {url[:50]}...")
+    """Send request to DeepSeek AI via OpenRouter"""
+    try:
+        headers = {
+            "Authorization": f"Bearer {AI_CONFIG['api_key']}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://t.me/alurb_bot",
+            "X-Title": "Alurb Telegram Bot"
+        }
+        
+        payload = {
+            "model": AI_CONFIG["model"],
+            "messages": [
+                {"role": "system", "content": "You are Alurb Bot's AI assistant. Be helpful, friendly, and concise."},
+                {"role": "user", "content": query}
+            ],
+            "temperature": 0.7,
+            "max_tokens": 500
+        }
+        
+        logger.info(f"Sending request to DeepSeek AI...")
+        
+        response = requests.post(
+            f"{AI_CONFIG['base_url']}/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=45
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            if 'choices' in data and len(data['choices']) > 0:
+                answer = data['choices'][0]['message']['content']
+                logger.info(f"DeepSeek response received")
+                return answer
+            else:
+                logger.error(f"Unexpected API response: {data}")
+                return "❌ AI returned an unexpected response."
+        elif response.status_code == 401:
+            return "❌ AI API key invalid. Contact admin."
+        elif response.status_code == 429:
+            return "❌ AI rate limit exceeded. Try again later."
+        else:
+            logger.error(f"DeepSeek API Error {response.status_code}: {response.text[:100]}")
+            return "❌ AI service temporarily unavailable."
             
-            response = requests.get(url, timeout=30)
-            
-            if response.status_code == 200:
-                data = response.json()
-                
-                # Try different response formats
-                answer = None
-                if 'result' in data:
-                    answer = data['result']
-                elif 'message' in data:
-                    answer = data['message']
-                elif 'data' in data:
-                    answer = data['data']
-                elif 'answer' in data:
-                    answer = data['answer']
-                elif 'response' in data:
-                    answer = data['response']
-                elif 'text' in data:
-                    answer = data['text']
-                elif 'reply' in data:
-                    answer = data['reply']
-                
-                if answer and len(str(answer)) > 10:
-                    logger.info(f"AI response received from API")
-                    return str(answer)
-                    
-        except requests.exceptions.Timeout:
-            logger.warning(f"API timeout: {api_url[:30]}...")
-            continue
-        except requests.exceptions.ConnectionError:
-            logger.warning(f"API connection error: {api_url[:30]}...")
-            continue
-        except Exception as e:
-            logger.warning(f"API error: {e}")
-            continue
-    
-    return "❌ AI service temporarily unavailable. Please try again later."
+    except requests.exceptions.Timeout:
+        return "❌ AI service timeout. Please try again."
+    except requests.exceptions.ConnectionError:
+        return "❌ Cannot connect to AI service."
+    except Exception as e:
+        logger.error(f"AI Error: {str(e)}")
+        return "❌ Error connecting to AI service."
 
 # Load initial data
 load_data()
@@ -269,7 +275,7 @@ def start_command(message):
 
 🔰 <b>Bot Features:</b>
 • 24/7 Online Status
-• AI Assistant (Gemini/GPT)
+• AI Assistant (DeepSeek Chat)
 • Premium Attack Tools
 • Group Management
 
@@ -288,7 +294,7 @@ def start_command(message):
 /ask - Ask AI
 
 ━━━━━━━━━━━━━━━━━━━━━━
-© dev_nappier 😂🫡
+© alurb_devs
     """
     bot.reply_to(message, welcome_text, parse_mode="HTML")
     
@@ -347,7 +353,7 @@ Commands:
 Enjoy! 🚀
         """, parse_mode="HTML")
     else:
-        bot.reply_to(message, "❌ Unable to start trial. Contact @dev_nappier")
+        bot.reply_to(message, "❌ Unable to start trial. Contact admin.")
 
 # ==================== PREMIUM COMMAND ====================
 
@@ -404,13 +410,12 @@ def premium_command(message):
 • Priority support
 
 📩 <b>To Upgrade:</b>
-👤 Contact: @dev_nappier
-📧 premium@alurb-bot.com
+👤 Contact: @alurb_devs
 
 💳 Crypto • PayPal • Bank Transfer
 
 ━━━━━━━━━━━━━━━━━━━━━━
-© dev_nappier 😂🫡
+© alurb_devs
     """, parse_mode="HTML")
 
 # ==================== STATUS COMMAND ====================
@@ -460,11 +465,11 @@ def status_command(message):
 
 🛠 <b>Info:</b>
 ━━━━━━━━━━━━━━━━━━━━━━
-🤖 AI: Gemini/GPT (Multi-API)
+🤖 AI: DeepSeek Chat
 🌐 Status: Online
 
 ━━━━━━━━━━━━━━━━━━━━━━
-© dev_nappier 😂🫡
+© alurb_devs
     """, parse_mode="HTML")
 
 # ==================== HELP COMMAND ====================
@@ -528,7 +533,8 @@ def help_command(message):
 ━━━━━━━━━━━━━━━━━━━━━━
 👤 Your Level: <b>{user_level}</b>
 🎁 Free Trial: /trial ({TRIAL_HOURS}h)
-© dev_nappier 😂🫡
+🤖 AI: DeepSeek Chat
+© alurb_devs
     """
     bot.reply_to(message, help_text, parse_mode="HTML")
 
@@ -809,7 +815,7 @@ def check_group(message):
     else:
         bot.reply_to(message, f"💬 Chat ID: <code>{chat_id}</code>", parse_mode="HTML")
 
-# ==================== AI COMMAND (WORKING) ====================
+# ==================== AI COMMAND ====================
 
 @bot.message_handler(commands=['ask'])
 def ask_ai(message):
@@ -826,9 +832,8 @@ def ask_ai(message):
             return
         
         bot.send_chat_action(message.chat.id, 'typing')
-        thinking_msg = bot.reply_to(message, "🤖 <b>AI is thinking...</b>", parse_mode="HTML")
+        thinking_msg = bot.reply_to(message, "🤖 <b>DeepSeek AI is thinking...</b>", parse_mode="HTML")
         
-        # Call the working AI function
         ai_response = ai_chat(query)
         
         bot.delete_message(message.chat.id, thinking_msg.message_id)
@@ -842,8 +847,8 @@ def ask_ai(message):
 {ai_response}
 
 ━━━━━━━━━━━━━━━━━━━━━━
-🤖 AI: Gemini/GPT Multi-API
-© dev_nappier 😂🫡
+🤖 AI: DeepSeek Chat
+© alurb_devs
         """
         bot.reply_to(message, response_text, parse_mode="HTML")
         logger.info(f"AI used by {user_id}: {query[:30]}...")
@@ -878,12 +883,11 @@ def track_groups(message):
     if len(GROUP_IDS) % 10 == 0:
         save_data()
 
-# ==================== MAIN RUNNER (FIXED - NO 409 ERROR) ====================
+# ==================== MAIN RUNNER ====================
 
 def run_bot():
     """Run bot with automatic restart - SINGLE INSTANCE"""
     
-    # Remove any existing webhook first
     logger.info("🧹 Cleaning up existing webhooks...")
     try:
         bot.remove_webhook()
@@ -894,7 +898,7 @@ def run_bot():
     
     logger.info("🚀 Starting Alurb Bot - Single Instance Mode")
     logger.info(f"👑 Master Owner ID: {MASTER_OWNER_ID}")
-    logger.info(f"🤖 AI: Multi-API (Gemini/GPT)")
+    logger.info(f"🤖 AI: DeepSeek Chat")
     logger.info(f"📊 Owners: {len(OWNERS)}, Premium: {len(PREMIUM_USERS)}")
     
     while True:
