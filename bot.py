@@ -415,7 +415,7 @@ def start_command(message):
 
 👋 Hello <b>{first_name}</b>!
 
-📊 <b>Your Status:</b> {status_line}{trial_msg}
+📊 <b>nappier😂 :</b> {status_line}{trial_msg}
 
 🔰 <b>Bot Features:</b>
 • 24/7 Online Status
