@@ -31,10 +31,6 @@ AI_CONFIG = {
     "language": "English"
 }
 
-# Use webhook instead of polling to prevent 409 conflicts
-USE_WEBHOOK = True  # Set to False only for local testing
-RENDER_URL = "https://alurb-ai.onrender.com"
-
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
 # Data storage
@@ -415,7 +411,7 @@ def start_command(message):
 
 👋 Hello <b>{first_name}</b>!
 
-📊 <b>nappier😂 :</b> {status_line}{trial_msg}
+📊 <b>Your Status:</b> {status_line}{trial_msg}
 
 🔰 <b>Bot Features:</b>
 • 24/7 Online Status
@@ -620,7 +616,6 @@ def status_command(message):
 🤖 AI: Alurb AI
 👨‍💻 Creators: Nappier & Ruth
 🌐 Status: Online
-🔧 Mode: Webhook (No Conflicts)
 
 ━━━━━━━━━━━━━━━━━━━━━━
 © alurb_devs
@@ -1138,102 +1133,63 @@ def track_groups(message):
         save_data()
         logger.info(f"Auto-saved {len(GROUP_IDS)} groups")
 
-# ==================== WEBHOOK HANDLER FOR RENDER ====================
-
-@app.route(f"/{BOT_TOKEN}", methods=['POST'])
-def webhook():
-    """Handle incoming webhook updates from Telegram"""
-    if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
-        return ''
-    else:
-        return 'Bad Request', 400
-
-@app.route('/webhook-info')
-def webhook_info():
-    """Display webhook status"""
-    try:
-        info = bot.get_webhook_info()
-        return jsonify({
-            "url": info.url,
-            "has_custom_certificate": info.has_custom_certificate,
-            "pending_update_count": info.pending_update_count,
-            "last_error_date": info.last_error_date,
-            "last_error_message": info.last_error_message,
-            "max_connections": info.max_connections,
-            "allowed_updates": info.allowed_updates
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)})
-
-# ==================== MAIN RUNNER (FIXED - WEBHOOK MODE) ====================
+# ==================== MAIN RUNNER (FIXED - NO 409 ERRORS) ====================
 
 def run_bot():
-    """Run bot with webhook - NO 409 ERRORS"""
+    """Run bot with polling - single instance"""
     
     logger.info("=" * 50)
-    logger.info("🧹 Cleaning up existing webhooks and sessions...")
+    logger.info("🧹 Cleaning up existing sessions...")
     
-    # Aggressive cleanup - remove webhook and close sessions
+    # Remove any existing webhook to prevent conflicts
     try:
         bot.remove_webhook()
-        time.sleep(2)
-        logger.info("✅ Old webhook removed")
+        time.sleep(1)
+        logger.info("✅ Webhook removed")
     except Exception as e:
         logger.warning(f"Webhook removal warning: {e}")
     
     logger.info("=" * 50)
-    logger.info("🚀 STARTING ALURB BOT - WEBHOOK MODE (NO CONFLICTS)")
+    logger.info("🚀 STARTING ALURB BOT - POLLING MODE")
     logger.info(f"👑 Master Owner ID: {MASTER_OWNER_ID}")
     logger.info(f"🤖 AI: Alurb AI (DeepSeek backend)")
     logger.info(f"👨‍💻 Creators: Nappier & Ruth")
     logger.info(f"📊 Loaded: {len(OWNERS)} owners, {len(PREMIUM_USERS)} premium, {len(TRIAL_USERS)} trials, {len(GROUP_IDS)} groups")
     logger.info("=" * 50)
     
-    if USE_WEBHOOK:
-        # WEBHOOK MODE - NO 409 CONFLICTS
-        webhook_url = f"{RENDER_URL}/{BOT_TOKEN}"
-        
-        try:
-            # Set webhook
-            bot.set_webhook(url=webhook_url, drop_pending_updates=True)
-            logger.info(f"✅ Webhook set to: {RENDER_URL}/[TOKEN]")
-            logger.info(f"✅ Bot is ready to receive updates!")
-            
-        except Exception as e:
-            logger.error(f"Webhook setup error: {e}")
-            logger.info("Falling back to polling mode...")
-            USE_WEBHOOK = False
+    if len(OWNERS) == 0:
+        logger.info("ℹ️ No additional owners configured")
     
-    if not USE_WEBHOOK:
-        # FALLBACK: Polling mode (only if webhook fails)
-        logger.info("📡 Starting polling mode...")
-        
-        while True:
-            try:
-                bot.infinity_polling(
-                    timeout=30, 
-                    long_polling_timeout=30, 
-                    skip_pending=True,
-                    allowed_updates=['message', 'callback_query']
-                )
-            except Exception as e:
-                error_str = str(e)
-                if "409" in error_str or "Conflict" in error_str:
-                    logger.critical("⚠️ 409 Conflict detected!")
-                    logger.critical("Revoke your bot token from @BotFather to fix this.")
-                    break
-                else:
-                    logger.error(f"Polling error: {e}")
-                    time.sleep(10)
-    
-    # Keep the main thread alive for webhook mode
-    logger.info("🤖 Bot is running and ready!")
+    restart_count = 0
     
     while True:
-        time.sleep(3600)
+        try:
+            logger.info(f"📡 Bot polling started (Restart count: {restart_count})")
+            bot.infinity_polling(
+                timeout=30, 
+                long_polling_timeout=30, 
+                skip_pending=True
+            )
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"Network error: {e}")
+            restart_count += 1
+            time.sleep(10)
+        except requests.exceptions.ReadTimeout as e:
+            logger.error(f"Timeout error: {e}")
+            restart_count += 1
+            time.sleep(5)
+        except Exception as e:
+            error_str = str(e)
+            if "409" in error_str or "Conflict" in error_str:
+                logger.critical("⚠️ 409 Conflict - Multiple instances detected!")
+                logger.critical("This usually means another bot instance is running.")
+                logger.critical("Revoke your bot token from @BotFather to force all instances offline.")
+                logger.critical("Get a NEW token and update the BOT_TOKEN environment variable.")
+                time.sleep(30)
+            else:
+                logger.error(f"Bot crashed: {e}")
+                restart_count += 1
+                time.sleep(10)
 
 if __name__ == "__main__":
     try:
